@@ -2,65 +2,104 @@ package org.bcbsaz
 
 class VeracodeStaticScan implements Serializable {
   def steps
-
-  private String action
-  private String version
+  private String action, version, appName, createProfile
   private Map arguments
-  private String appName
-  private String createProfile
- 
-  public VeracodeStaticScan(
-    steps,
 
-    String action,
-    String version,
-    Map arguments,
-    String appName,
-    String createProfile
-
-    ) {
-
+  VeracodeStaticScan(steps, String action, String version, Map arguments, String appName, String createProfile) {
     this.steps = steps
-    this.action = action
-    this.version = version
-    this.arguments = arguments
+    this.action = action ?: "UploadAndScan"
+    this.version = version ?: defaultVersion()
+    this.arguments = arguments ?: [:]
     this.appName = appName
-    this.createProfile = createProfile
+    this.createProfile = (createProfile ?: 'true')
   }
 
-  private String getArguments() {
-    String options = ''
+  private String defaultVersion() {
+    def tag = steps.env.BUILD_TAG ?: "${steps.env.JOB_NAME}-${steps.env.BUILD_NUMBER}"
+    "${tag}-${new Date().format('yyyyMMddHHmmss')}"
+  }
 
-    if (arguments) {
-      for (String key in arguments.keySet()) {
-          options += "-${key} ${arguments[key]} "
-        }
+  private List<String> resolveArtifacts() {
+    Map argsCopy = [:] + (arguments ?: [:])
+    List<String> files = []
+
+    // 1) explicit filepaths (absolute preferred)
+    if (argsCopy.filepaths instanceof List) {
+      files.addAll(argsCopy.filepaths as List<String>)
     }
 
-    return options
+    // 2) optional auto-package of CURRENT WORKSPACE (runs inside container)
+    if (files.isEmpty() && (argsCopy.autoPackage == true)) {
+      String outDir = (argsCopy.autoPackageOutputDir ?: 'verascan')
+      steps.sh "rm -rf '${outDir}' && mkdir -p '${outDir}'"
+      steps.sh """
+        set -e
+        echo "[AutoPack] veracode package --source . --output '${outDir}' --trust"
+        veracode package --source . --output '${outDir}' --trust
+      """
+      def listed = steps.sh(returnStdout:true, script: "ls -1 '${outDir}' 2>/dev/null || true").trim()
+      if (listed) listed.readLines().each { files << "${outDir}/${it}" }
+    }
+
+    // zip any directories (Veracode expects files)
+    List<String> resolved = []
+    files.unique().each { path ->
+      if (steps.sh(returnStatus:true, script:"[ -d '${path}' ]") == 0) {
+        steps.sh """
+          set -e
+          mkdir -p .veracode-pack
+          zip -r .veracode-pack/$(basename '${path}').zip '${path}'
+        """
+        String zipName = steps.sh(returnStdout:true, script:"basename '${path}'").trim()
+        resolved << ".veracode-pack/${zipName}.zip"
+      } else {
+        resolved << path
+      }
+    }
+
+    // absolute paths for uploadandscan
+    List<String> abs = []
+    resolved.each { rp ->
+      String a = steps.sh(returnStdout:true, script: "readlink -f '${rp}' || realpath '${rp}'").trim()
+      if (a) abs << a
+    }
+    return abs
   }
 
-  public String executeStaticScan() {
-    String output = ''
-    String options = getArguments()
+  private String buildExtraFlags() {
+    Map pass = [:] + (arguments ?: [:])
+    pass.remove('filepaths'); pass.remove('autoPackage'); pass.remove('autoPackageOutputDir')
+    pass.collect { k, v -> v ? "-${k} ${v}" : "" }.findAll { it }.join(' ')
+  }
 
-    String veracodeStaticScanOutput = steps.sh(
-      returnStdout: true,
-      script: """#!/usr/bin/env bash
-        cd build-output && zip -r ../app-scan.zip . && cd ..
-        veracode -vid "\$VERACODE_API_KEY_ID" \
-          -vkey "\$VERACODE_API_KEY_SECRET" \
-          -action ${action} \
-          -appname "${appName}.static" \
-          -version ${version} \
-          -createprofile ${createProfile} \
-          -filepath app-scan.zip $options
-      """
-    )
-    steps.echo "Veracode Static Scan Output:"
-    steps.echo veracodeStaticScanOutput
-    
-    output += veracodeStaticScanOutput
-    return output
+  String executeStaticScan() {
+    List<String> absFiles = resolveArtifacts()
+    if (!absFiles) {
+      steps.echo "[Veracode] No artifacts to upload for ${appName}.static — skipping."
+      return "SKIPPED_NO_ARTIFACT"
+    }
+
+    String filepathArgs = absFiles.collect { a -> "-filepath '${a.replace('\\','/').replace(\"'\", \"'\\\"'\\\"'\")}'" }
+                                  .join(' \\\n  ')
+    String base = """
+      -action ${action} \
+      -appname "${appName}.static" \
+      -version "${version}" \
+      -createprofile ${createProfile}
+    """.trim()
+    String extra = buildExtraFlags()
+
+    String out = steps.sh(returnStdout:true, script: """#!/usr/bin/env bash
+      set -e
+      echo "[Veracode] uploadandscan: ${appName}.static :: ${version}"
+      veracode -vid "\$VERACODE_API_KEY_ID" -vkey "\$VERACODE_API_KEY_SECRET" \\
+        ${base} ${extra} \\
+        ${filepathArgs}
+    """).trim()
+
+    steps.writeFile file: "veracode-uploaded-files.txt", text: absFiles.join('\n')
+    steps.archiveArtifacts artifacts: 'veracode-uploaded-files.txt', allowEmptyArchive: true
+    steps.echo "Veracode Output:\n${out}"
+    return out
   }
 }
