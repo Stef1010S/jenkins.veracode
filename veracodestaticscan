@@ -1,0 +1,66 @@
+package org.bcbsaz
+
+class VeracodeStaticScan implements Serializable {
+  def steps
+
+  private String action
+  private String version
+  private Map arguments
+  private String appName
+  private String createProfile
+ 
+  public VeracodeStaticScan(
+    steps,
+
+    String action,
+    String version,
+    Map arguments,
+    String appName,
+    String createProfile
+
+    ) {
+
+    this.steps = steps
+    this.action = action
+    this.version = version
+    this.arguments = arguments
+    this.appName = appName
+    this.createProfile = createProfile
+  }
+
+  private String getArguments() {
+    String options = ''
+
+    if (arguments) {
+      for (String key in arguments.keySet()) {
+          options += "-${key} ${arguments[key]} "
+        }
+    }
+
+    return options
+  }
+
+  public String executeStaticScan() {
+    String output = ''
+    String options = getArguments()
+
+    String veracodeStaticScanOutput = steps.sh(
+      returnStdout: true,
+      script: """#!/usr/bin/env bash
+        cd build-output && zip -r ../app-scan.zip . && cd ..
+        veracode -vid "\$VERACODE_API_KEY_ID" \
+          -vkey "\$VERACODE_API_KEY_SECRET" \
+          -action ${action} \
+          -appname "${appName}.static" \
+          -version ${version} \
+          -createprofile ${createProfile} \
+          -filepath app-scan.zip $options
+      """
+    )
+    steps.echo "Veracode Static Scan Output:"
+    steps.echo veracodeStaticScanOutput
+    
+    output += veracodeStaticScanOutput
+    return output
+  }
+}
