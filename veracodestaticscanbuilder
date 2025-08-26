@@ -1,0 +1,57 @@
+package org.bcbsaz
+
+class VeracodeStaticScanBuilder implements Serializable {
+  def steps
+
+  private String action
+  private String version
+  private Map arguments
+  private String appName
+  private String createProfile
+
+  public VeracodeStaticScanBuilder(steps) {
+    this.steps = steps
+  }
+
+  public VeracodeStaticScanBuilder setAction(String action) {
+    this.action = action
+    return this
+  }
+
+  public VeracodeStaticScanBuilder setVersion(String version) {
+    if (! version) {
+      steps.error('App version was not specified')
+    }
+    this.version = version
+    return this
+  }
+
+  public VeracodeStaticScanBuilder setArguments(Map arguments) {
+    this.arguments = arguments
+    return this
+  }
+
+  public VeracodeStaticScanBuilder setAppName(String appName) {
+    if (! appName) {
+      steps.error('App Name was not specified')
+    }
+    this.appName = appName
+    return this
+  }
+
+  public VeracodeStaticScanBuilder setCreateProfile(String createProfile) {
+    this.createProfile = createProfile
+    return this
+  }
+    
+  public VeracodeStaticScan build() {
+    return new VeracodeStaticScan(
+      steps,
+      action,
+      version,
+      arguments,
+      appName,
+      createProfile
+    )
+  }
+}
